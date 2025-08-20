@@ -1,438 +1,99 @@
 #!/bin/bash
+# install.sh - 一键安装 Xray Reality VLESS 节点
 
-author=233boy
-# github=https://github.com/233boy/sing-box
+set -e
 
-# bash fonts colors
-red='\e[31m'
-yellow='\e[33m'
-gray='\e[90m'
-green='\e[92m'
-blue='\e[94m'
-magenta='\e[95m'
-cyan='\e[96m'
-none='\e[0m'
-_red() { echo -e ${red}$@${none}; }
-_blue() { echo -e ${blue}$@${none}; }
-_cyan() { echo -e ${cyan}$@${none}; }
-_green() { echo -e ${green}$@${none}; }
-_yellow() { echo -e ${yellow}$@${none}; }
-_magenta() { echo -e ${magenta}$@${none}; }
-_red_bg() { echo -e "\e[41m$@${none}"; }
+# ====== 固定参数 ======
+XRAY_VERSION="v25.8.3"
+INSTALL_DIR="/usr/local/bin"
+CONFIG_DIR="/usr/local/etc/xray"
+LOG_DIR="/var/log/xray"
+UUID="33d0237c-2355-42c3-be86-54219aab8c6e"
+PORT=40218
+PRIVATE_KEY="replace_with_your_private_key"
+PUBLIC_KEY="Ej_2eEwk8EjlQhPzK3uP70lKnb-1L9zytQ8bkhuQkhI"
+SHORT_ID="1234567890abcdef"
+SNI="www.ebay.com"
 
-is_err=$(_red_bg 错误!)
-is_warn=$(_red_bg 警告!)
+# ====== 安装依赖 ======
+apt update -y
+apt install -y wget curl unzip
 
-err() {
-    echo -e "\n$is_err $@\n" && exit 1
-}
+# ====== 安装 Xray ======
+mkdir -p $CONFIG_DIR $LOG_DIR
+wget -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip
+unzip -o /tmp/xray.zip -d /tmp/xray
+install -m 755 /tmp/xray/xray $INSTALL_DIR/xray
+rm -rf /tmp/xray*
 
-warn() {
-    echo -e "\n$is_warn $@\n"
-}
+# ====== 生成 systemd 服务 ======
+cat > /etc/systemd/system/xray.service <<EOF
+[Unit]
+Description=Xray Service
+After=network.target
 
-# root
-[[ $EUID != 0 ]] && err "当前非 ${yellow}ROOT用户.${none}"
+[Service]
+ExecStart=$INSTALL_DIR/xray run -config $CONFIG_DIR/config.json
+Restart=on-failure
+User=nobody
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
-# yum or apt-get, ubuntu/debian/centos
-cmd=$(type -P apt-get || type -P yum)
-[[ ! $cmd ]] && err "此脚本仅支持 ${yellow}(Ubuntu or Debian or CentOS)${none}."
+[Install]
+WantedBy=multi-user.target
+EOF
 
-# systemd
-[[ ! $(type -P systemctl) ]] && {
-    err "此系统缺少 ${yellow}(systemctl)${none}, 请尝试执行:${yellow} ${cmd} update -y;${cmd} install systemd -y ${none}来修复此错误."
-}
-
-# wget installed or none
-is_wget=$(type -P wget)
-
-# x64
-case $(uname -m) in
-amd64 | x86_64)
-    is_arch=amd64
-    ;;
-*aarch64* | *armv8*)
-    is_arch=arm64
-    ;;
-*)
-    err "此脚本仅支持 64 位系统..."
-    ;;
-esac
-
-is_core=sing-box
-is_core_name=sing-box
-is_core_dir=/etc/$is_core
-is_core_bin=$is_core_dir/bin/$is_core
-is_core_repo=SagerNet/$is_core
-is_conf_dir=$is_core_dir/conf
-is_log_dir=/var/log/$is_core
-is_sh_bin=/usr/local/bin/$is_core
-is_sh_dir=$is_core_dir/sh
-is_sh_repo=$author/$is_core
-is_pkg="wget tar"
-is_config_json=$is_core_dir/config.json
-tmp_var_lists=(
-    tmpcore
-    tmpsh
-    tmpjq
-    is_core_ok
-    is_sh_ok
-    is_jq_ok
-    is_pkg_ok
-)
-
-# tmp dir
-tmpdir=$(mktemp -u)
-[[ ! $tmpdir ]] && {
-    tmpdir=/tmp/tmp-$RANDOM
-}
-
-# set up var
-for i in ${tmp_var_lists[*]}; do
-    export $i=$tmpdir/$i
-done
-
-# load bash script.
-load() {
-    . $is_sh_dir/src/$1
-}
-
-# wget add --no-check-certificate
-_wget() {
-    [[ $proxy ]] && export https_proxy=$proxy
-    wget --no-check-certificate $*
-}
-
-# print a mesage
-msg() {
-    case $1 in
-    warn)
-        local color=$yellow
-        ;;
-    err)
-        local color=$red
-        ;;
-    ok)
-        local color=$green
-        ;;
-    esac
-
-    echo -e "${color}$(date +'%T')${none}) ${2}"
-}
-
-# show help msg
-show_help() {
-    echo -e "Usage: $0 [-f xxx | -l | -p xxx | -v xxx | -h]"
-    echo -e "  -f, --core-file <path>          自定义 $is_core_name 文件路径, e.g., -f /root/$is_core-linux-amd64.tar.gz"
-    echo -e "  -l, --local-install             本地获取安装脚本, 使用当前目录"
-    echo -e "  -p, --proxy <addr>              使用代理下载, e.g., -p http://127.0.0.1:2333"
-    echo -e "  -v, --core-version <ver>        自定义 $is_core_name 版本, e.g., -v v1.8.13"
-    echo -e "  -h, --help                      显示此帮助界面\n"
-
-    exit 0
-}
-
-# install dependent pkg
-install_pkg() {
-    cmd_not_found=
-    for i in $*; do
-        [[ ! $(type -P $i) ]] && cmd_not_found="$cmd_not_found,$i"
-    done
-    if [[ $cmd_not_found ]]; then
-        pkg=$(echo $cmd_not_found | sed 's/,/ /g')
-        msg warn "安装依赖包 >${pkg}"
-        $cmd install -y $pkg &>/dev/null
-        if [[ $? != 0 ]]; then
-            [[ $cmd =~ yum ]] && yum install epel-release -y &>/dev/null
-            $cmd update -y &>/dev/null
-            $cmd install -y $pkg &>/dev/null
-            [[ $? == 0 ]] && >$is_pkg_ok
-        else
-            >$is_pkg_ok
-        fi
-    else
-        >$is_pkg_ok
-    fi
-}
-
-# download file
-download() {
-    case $1 in
-    core)
-        [[ ! $is_core_ver ]] && is_core_ver=$(_wget -qO- "https://api.github.com/repos/${is_core_repo}/releases/latest?v=$RANDOM" | grep tag_name | grep -E -o 'v([0-9.]+)')
-        [[ $is_core_ver ]] && link="https://github.com/${is_core_repo}/releases/download/${is_core_ver}/${is_core}-${is_core_ver:1}-linux-${is_arch}.tar.gz"
-        name=$is_core_name
-        tmpfile=$tmpcore
-        is_ok=$is_core_ok
-        ;;
-    sh)
-        link=https://github.com/${is_sh_repo}/releases/latest/download/code.tar.gz
-        name="$is_core_name 脚本"
-        tmpfile=$tmpsh
-        is_ok=$is_sh_ok
-        ;;
-    jq)
-        link=https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$is_arch
-        name="jq"
-        tmpfile=$tmpjq
-        is_ok=$is_jq_ok
-        ;;
-    esac
-
-    [[ $link ]] && {
-        msg warn "下载 ${name} > ${link}"
-        if _wget -t 3 -q -c $link -O $tmpfile; then
-            mv -f $tmpfile $is_ok
-        fi
-    }
-}
-
-# get server ip
-get_ip() {
-    export "$(_wget -4 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-    [[ -z $ip ]] && export "$(_wget -6 -qO- https://one.one.one.one/cdn-cgi/trace | grep ip=)" &>/dev/null
-}
-
-# check background tasks status
-check_status() {
-    [[ ! -f $is_pkg_ok ]] && {
-        msg err "安装依赖包失败"
-        msg err "请尝试手动安装依赖包: $cmd update -y; $cmd install -y $pkg"
-        is_fail=1
-    }
-
-    if [[ $is_wget ]]; then
-        [[ ! -f $is_core_ok ]] && {
-            msg err "下载 ${is_core_name} 失败"
-            is_fail=1
-        }
-        [[ ! -f $is_sh_ok ]] && {
-            msg err "下载 ${is_core_name} 脚本失败"
-            is_fail=1
-        }
-        [[ ! -f $is_jq_ok ]] && {
-            msg err "下载 jq 失败"
-            is_fail=1
-        }
-    else
-        [[ ! $is_fail ]] && {
-            is_wget=1
-            [[ ! $is_core_file ]] && download core &
-            [[ ! $local_install ]] && download sh &
-            [[ $jq_not_found ]] && download jq &
-            get_ip
-            wait
-            check_status
-        }
-    fi
-
-    [[ $is_fail ]] && {
-        exit_and_del_tmpdir
-    }
-}
-
-# parameters check
-pass_args() {
-    while [[ $# -gt 0 ]]; do
-        case $1 in
-        -f | --core-file)
-            [[ -z $2 ]] && {
-                err "($1) 缺少必需参数"
-            } || [[ ! -f $2 ]] && {
-                err "($2) 不是一个常规的文件."
-            }
-            is_core_file=$2
-            shift 2
-            ;;
-        -l | --local-install)
-            [[ ! -f ${PWD}/src/core.sh || ! -f ${PWD}/$is_core.sh ]] && {
-                err "当前目录 (${PWD}) 非完整的脚本目录."
-            }
-            local_install=1
-            shift 1
-            ;;
-        -p | --proxy)
-            [[ -z $2 ]] && {
-                err "($1) 缺少必需参数"
-            }
-            proxy=$2
-            shift 2
-            ;;
-        -v | --core-version)
-            [[ -z $2 ]] && {
-                err "($1) 缺少必需参数"
-            }
-            is_core_ver=v${2//v/}
-            shift 2
-            ;;
-        -h | --help)
-            show_help
-            ;;
-        *)
-            echo -e "\n${is_err} ($@) 为未知参数...\n"
-            show_help
-            ;;
-        esac
-    done
-    [[ $is_core_ver && $is_core_file ]] && {
-        err "无法同时自定义 ${is_core_name} 版本和 ${is_core_name} 文件."
-    }
-}
-
-# exit and remove tmpdir
-exit_and_del_tmpdir() {
-    rm -rf $tmpdir
-    [[ ! $1 ]] && {
-        msg err "哦豁.."
-        msg err "安装过程出现错误..."
-        echo -e "反馈问题) https://github.com/${is_sh_repo}/issues"
-        echo
-        exit 1
-    }
-    exit
-}
-
-# main
-main() {
-
-    [[ -f $is_sh_bin && -d $is_core_dir/bin && -d $is_sh_dir && -d $is_conf_dir ]] && {
-        err "检测到脚本已安装, 如需重装请使用${green} ${is_core} reinstall ${none}命令."
-    }
-
-    [[ $# -gt 0 ]] && pass_args $@
-
-    clear
-    echo
-    echo "........... $is_core_name script by $author .........."
-    echo
-
-    msg warn "开始安装..."
-    [[ $is_core_ver ]] && msg warn "${is_core_name} 版本: ${yellow}$is_core_ver${none}"
-    [[ $proxy ]] && msg warn "使用代理: ${yellow}$proxy${none}"
-
-    mkdir -p $tmpdir
-    [[ $is_core_file ]] && {
-        cp -f $is_core_file $is_core_ok
-        msg warn "${yellow}${is_core_name} 文件使用 > $is_core_file${none}"
-    }
-    [[ $local_install ]] && {
-        >$is_sh_ok
-        msg warn "${yellow}本地获取安装脚本 > $PWD ${none}"
-    }
-
-    timedatectl set-ntp true &>/dev/null
-    [[ $? != 0 ]] && {
-        is_ntp_on=1
-    }
-
-    install_pkg $is_pkg &
-
-    if [[ $(type -P jq) ]]; then
-        >$is_jq_ok
-    else
-        jq_not_found=1
-    fi
-    [[ $is_wget ]] && {
-        [[ ! $is_core_file ]] && download core &
-        [[ ! $local_install ]] && download sh &
-        [[ $jq_not_found ]] && download jq &
-        get_ip
-    }
-
-    wait
-    check_status
-
-    if [[ $is_core_file ]]; then
-        mkdir -p $tmpdir/testzip
-        tar zxf $is_core_ok --strip-components 1 -C $tmpdir/testzip &>/dev/null
-        [[ $? != 0 ]] && {
-            msg err "${is_core_name} 文件无法通过测试."
-            exit_and_del_tmpdir
-        }
-        [[ ! -f $tmpdir/testzip/$is_core ]] && {
-            msg err "${is_core_name} 文件无法通过测试."
-            exit_and_del_tmpdir
-        }
-    fi
-
-    [[ ! $ip ]] && {
-        msg err "获取服务器 IP 失败."
-        exit_and_del_tmpdir
-    }
-
-    mkdir -p $is_sh_dir
-    if [[ $local_install ]]; then
-        cp -rf $PWD/* $is_sh_dir
-    else
-        tar zxf $is_sh_ok -C $is_sh_dir
-    fi
-
-    mkdir -p $is_core_dir/bin
-    if [[ $is_core_file ]]; then
-        cp -rf $tmpdir/testzip/* $is_core_dir/bin
-    else
-        tar zxf $is_core_ok --strip-components 1 -C $is_core_dir/bin
-    fi
-
-    echo "alias sb=$is_sh_bin" >>/root/.bashrc
-    echo "alias $is_core=$is_sh_bin" >>/root/.bashrc
-
-    ln -sf $is_sh_dir/$is_core.sh $is_sh_bin
-    ln -sf $is_sh_dir/$is_core.sh ${is_sh_bin/$is_core/sb}
-
-    [[ $jq_not_found ]] && mv -f $is_jq_ok /usr/bin/jq
-    chmod +x $is_core_bin $is_sh_bin /usr/bin/jq ${is_sh_bin/$is_core/sb}
-
-    mkdir -p $is_log_dir
-
-    msg ok "生成配置文件..."
-
-    load systemd.sh
-    is_new_install=1
-    install_service $is_core &>/dev/null
-
-    mkdir -p $is_conf_dir
-
-    # 这里替换成固定配置，不再随机生成
-    cat > $is_config_json <<EOF
+# ====== 写入配置文件 ======
+cat > $CONFIG_DIR/config.json <<EOF
 {
   "log": {
-    "level": "info"
+    "access": "$LOG_DIR/access.log",
+    "error": "$LOG_DIR/error.log",
+    "loglevel": "warning"
   },
   "inbounds": [
     {
-      "type": "vless",
-      "listen": "::",
-      "listen_port": 443,
-      "users": [
-        {
-          "uuid": "123e4567-e89b-12d3-a456-426614174000",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "www.microsoft.com",
-            "server_port": 443
-          },
-          "private_key": "f9a8a3a7b4f2c1d3e4f567890abcdef1234567890abcdef1234567890abcdef",
-          "short_id": ["abcdef1234567890"]
+      "port": $PORT,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "$UUID",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "$SNI:443",
+          "xver": 0,
+          "serverNames": ["$SNI"],
+          "privateKey": "$PRIVATE_KEY",
+          "shortIds": ["$SHORT_ID"]
         }
       }
     }
   ],
   "outbounds": [
     {
-      "type": "direct"
+      "protocol": "freedom"
     }
   ]
 }
 EOF
 
-    exit_and_del_tmpdir ok
-}
+# ====== 重启服务 ======
+systemctl daemon-reexec
+systemctl enable xray
+systemctl restart xray
 
-main $@
+echo "✅ Xray Reality 安装完成！"
+echo "服务器已启动，节点信息如下："
+echo "--------------------------------------------------"
+echo "vless://$UUID@$(curl -s ifconfig.me):$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC_KEY&type=tcp&headerType=none#Reality-Node"
+echo "--------------------------------------------------"

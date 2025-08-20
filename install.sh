@@ -195,14 +195,12 @@ get_ip() {
 
 # check background tasks status
 check_status() {
-    # dependent pkg install fail
     [[ ! -f $is_pkg_ok ]] && {
         msg err "安装依赖包失败"
         msg err "请尝试手动安装依赖包: $cmd update -y; $cmd install -y $pkg"
         is_fail=1
     }
 
-    # download file status
     if [[ $is_wget ]]; then
         [[ ! -f $is_core_ok ]] && {
             msg err "下载 ${is_core_name} 失败"
@@ -228,7 +226,6 @@ check_status() {
         }
     fi
 
-    # found fail status, remove tmp dir and exit.
     [[ $is_fail ]] && {
         exit_and_del_tmpdir
     }
@@ -240,7 +237,7 @@ pass_args() {
         case $1 in
         -f | --core-file)
             [[ -z $2 ]] && {
-                err "($1) 缺少必需参数, 正确使用示例: [$1 /root/$is_core-linux-amd64.tar.gz]"
+                err "($1) 缺少必需参数"
             } || [[ ! -f $2 ]] && {
                 err "($2) 不是一个常规的文件."
             }
@@ -256,14 +253,14 @@ pass_args() {
             ;;
         -p | --proxy)
             [[ -z $2 ]] && {
-                err "($1) 缺少必需参数, 正确使用示例: [$1 http://127.0.0.1:2333 or -p socks5://127.0.0.1:2333]"
+                err "($1) 缺少必需参数"
             }
             proxy=$2
             shift 2
             ;;
         -v | --core-version)
             [[ -z $2 ]] && {
-                err "($1) 缺少必需参数, 正确使用示例: [$1 v1.8.13]"
+                err "($1) 缺少必需参数"
             }
             is_core_ver=v${2//v/}
             shift 2
@@ -298,32 +295,26 @@ exit_and_del_tmpdir() {
 # main
 main() {
 
-    # check old version
     [[ -f $is_sh_bin && -d $is_core_dir/bin && -d $is_sh_dir && -d $is_conf_dir ]] && {
         err "检测到脚本已安装, 如需重装请使用${green} ${is_core} reinstall ${none}命令."
     }
 
-    # check parameters
     [[ $# -gt 0 ]] && pass_args $@
 
-    # show welcome msg
     clear
     echo
     echo "........... $is_core_name script by $author .........."
     echo
 
-    # start installing...
     msg warn "开始安装..."
     [[ $is_core_ver ]] && msg warn "${is_core_name} 版本: ${yellow}$is_core_ver${none}"
     [[ $proxy ]] && msg warn "使用代理: ${yellow}$proxy${none}"
-    # create tmpdir
+
     mkdir -p $tmpdir
-    # if is_core_file, copy file
     [[ $is_core_file ]] && {
         cp -f $is_core_file $is_core_ok
         msg warn "${yellow}${is_core_name} 文件使用 > $is_core_file${none}"
     }
-    # local dir install sh script
     [[ $local_install ]] && {
         >$is_sh_ok
         msg warn "${yellow}本地获取安装脚本 > $PWD ${none}"
@@ -334,16 +325,13 @@ main() {
         is_ntp_on=1
     }
 
-    # install dependent pkg
     install_pkg $is_pkg &
 
-    # jq
     if [[ $(type -P jq) ]]; then
         >$is_jq_ok
     else
         jq_not_found=1
     fi
-    # if wget installed. download core, sh, jq, get ip
     [[ $is_wget ]] && {
         [[ ! $is_core_file ]] && download core &
         [[ ! $local_install ]] && download sh &
@@ -351,13 +339,9 @@ main() {
         get_ip
     }
 
-    # waiting for background tasks is done
     wait
-
-    # check background tasks status
     check_status
 
-    # test $is_core_file
     if [[ $is_core_file ]]; then
         mkdir -p $tmpdir/testzip
         tar zxf $is_core_ok --strip-components 1 -C $tmpdir/testzip &>/dev/null
@@ -371,65 +355,84 @@ main() {
         }
     fi
 
-    # get server ip.
     [[ ! $ip ]] && {
         msg err "获取服务器 IP 失败."
         exit_and_del_tmpdir
     }
 
-    # create sh dir...
     mkdir -p $is_sh_dir
-
-    # copy sh file or unzip sh zip file.
     if [[ $local_install ]]; then
         cp -rf $PWD/* $is_sh_dir
     else
         tar zxf $is_sh_ok -C $is_sh_dir
     fi
 
-    # create core bin dir
     mkdir -p $is_core_dir/bin
-    # copy core file or unzip core zip file
     if [[ $is_core_file ]]; then
         cp -rf $tmpdir/testzip/* $is_core_dir/bin
     else
         tar zxf $is_core_ok --strip-components 1 -C $is_core_dir/bin
     fi
 
-    # add alias
     echo "alias sb=$is_sh_bin" >>/root/.bashrc
     echo "alias $is_core=$is_sh_bin" >>/root/.bashrc
 
-    # core command
     ln -sf $is_sh_dir/$is_core.sh $is_sh_bin
     ln -sf $is_sh_dir/$is_core.sh ${is_sh_bin/$is_core/sb}
 
-    # jq
     [[ $jq_not_found ]] && mv -f $is_jq_ok /usr/bin/jq
-
-    # chmod
     chmod +x $is_core_bin $is_sh_bin /usr/bin/jq ${is_sh_bin/$is_core/sb}
 
-    # create log dir
     mkdir -p $is_log_dir
 
-    # show a tips msg
     msg ok "生成配置文件..."
 
-    # create systemd service
     load systemd.sh
     is_new_install=1
     install_service $is_core &>/dev/null
 
-    # create condf dir
     mkdir -p $is_conf_dir
 
-    load core.sh
-    # create a reality config
-    add reality
-    # remove tmp dir and exit.
+    # 这里替换成固定配置，不再随机生成
+    cat > $is_config_json <<EOF
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [
+        {
+          "uuid": "123e4567-e89b-12d3-a456-426614174000",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.microsoft.com",
+            "server_port": 443
+          },
+          "private_key": "f9a8a3a7b4f2c1d3e4f567890abcdef1234567890abcdef1234567890abcdef",
+          "short_id": ["abcdef1234567890"]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct"
+    }
+  ]
+}
+EOF
+
     exit_and_del_tmpdir ok
 }
 
-# start.
 main $@

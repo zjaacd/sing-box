@@ -4,7 +4,7 @@
 set -e
 
 # ====== 固定参数 (所有配置已固定，确保每次部署生成相同节点) ======
-XRAY_VERSION="v1.8.10" # 使用一个较新的稳定版本
+XRAY_VERSION="v1.9.0" # 已更新为最新的稳定版本
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/usr/local/etc/xray"
 LOG_DIR="/var/log/xray"
@@ -26,7 +26,6 @@ apt install -y wget curl unzip
 # ====== 安装 Xray ======
 echo "正在下载并安装 Xray-core..."
 mkdir -p $CONFIG_DIR $LOG_DIR
-# 注意：官方仓库已从 XTLS 切换到 Xray-project
 wget -O /tmp/xray.zip https://github.com/Xray-project/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip
 unzip -o /tmp/xray.zip -d /tmp/xray
 install -m 755 /tmp/xray/xray $INSTALL_DIR/xray
